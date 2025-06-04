@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 2.8.3)
 project(fast_lio)
 
 SET(CMAKE_BUILD_TYPE "Debug")
-
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 ADD_COMPILE_OPTIONS(-std=c++14)
 ADD_COMPILE_OPTIONS(-std=c++14)
 set(CMAKE_CXX_FLAGS "-std=c++14 -O3")

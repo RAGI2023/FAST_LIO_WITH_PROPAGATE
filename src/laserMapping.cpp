@@ -56,17 +56,23 @@
 #include <Eigen/Core>
 #include <csignal>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <thread>
 
 #include "IMU_Processing.hpp"
 #include "preprocess.h"
+#include "ros/publisher.h"
+#include "utils.hpp"
 
 #define INIT_TIME (0.1)
 #define LASER_POINT_COV (0.001)
 #define MAXN (720000)
 #define PUBFRAME_PERIOD (20)
 
+// 外加imu前向预测使用的变量
+ImuPredicter imu_predicter;
+std::shared_ptr<ros::Publisher> pub_imu_prop_ptr;
 /*** Time Log Variables ***/
 double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0,
        kdtree_delete_time = 0.0;
@@ -375,6 +381,43 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in) {
 
   imu_buffer.push_back(msg);
   mtx_buffer.unlock();
+  // 进行更改
+  imu_predicter.fastPredictIMU(
+      timestamp,
+      Eigen::Vector3d(msg_in->linear_acceleration.x,
+                      msg_in->linear_acceleration.y,
+                      msg_in->linear_acceleration.z),
+      Eigen::Vector3d(msg_in->angular_velocity.x, msg_in->angular_velocity.y,
+                      msg_in->angular_velocity.z));
+
+  Eigen::Vector3d P, V;
+  Eigen::Quaterniond q;
+  imu_predicter.get_state(P, q, V);
+  nav_msgs::Odometry odom;
+  odom.header.stamp = msg_in->header.stamp;
+  // 位置
+  odom.pose.pose.position.x = P.x();
+  odom.pose.pose.position.y = P.y();
+  odom.pose.pose.position.z = P.z();
+
+  // 姿态（四元数）
+  odom.pose.pose.orientation.x = q.x();
+  odom.pose.pose.orientation.y = q.y();
+  odom.pose.pose.orientation.z = q.z();
+  odom.pose.pose.orientation.w = q.w();
+
+  // 线速度
+  odom.twist.twist.linear.x = V.x();
+  odom.twist.twist.linear.y = V.y();
+  odom.twist.twist.linear.z = V.z();
+
+  // 角速度
+  odom.twist.twist.angular.x = msg_in->angular_velocity.x;
+  odom.twist.twist.angular.y = msg_in->angular_velocity.y;
+  odom.twist.twist.angular.z = msg_in->angular_velocity.z;
+  if (pub_imu_prop_ptr) {
+    pub_imu_prop_ptr->publish(odom);
+  }
   sig_buffer.notify_all();
 }
 
@@ -856,6 +899,8 @@ int main(int argc, char **argv) {
   ros::Publisher pubOdomAftMapped =
       nh.advertise<nav_msgs::Odometry>("/Odometry", 100000);
   ros::Publisher pubPath = nh.advertise<nav_msgs::Path>("/path", 100000);
+  pub_imu_prop_ptr = std::make_shared<ros::Publisher>(
+      nh.advertise<nav_msgs::Odometry>("/imu_propogate", 1));
   //------------------------------------------------------------------------------------------------------
   signal(SIGINT, SigHandle);
   ros::Rate rate(5000);
@@ -958,6 +1003,8 @@ int main(int argc, char **argv) {
       double solve_H_time = 0;
       kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
       state_point = kf.get_x();
+      imu_predicter.set_state(state_point);
+      imu_predicter.set_bias(state_point);
       euler_cur = SO3ToEuler(state_point.rot);
       pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
       geoQuat.x = state_point.rot.coeffs()[0];
